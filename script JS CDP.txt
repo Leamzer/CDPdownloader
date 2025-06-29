@@ -1,0 +1,122 @@
+(async () => {
+	if (typeof JSZip === 'undefined') {
+		await new Promise(resolve => {
+			const s = document.createElement('script');
+			s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js';
+			s.onload = resolve;
+			document.head.appendChild(s);
+		});
+	}
+
+	function urlFinitParChiffre(url) {
+		return /\d$/.test(url.split('?').pop());
+	}
+
+	function extensionFromContentType(type) {
+		if (type.includes('pdf')) return '.pdf';
+		if (type.includes('msword')) return '.doc';
+		if (type.includes('officedocument.wordprocessingml')) return '.docx';
+		if (type.includes('officedocument.spreadsheetml')) return '.xlsx';
+		if (type.includes('officedocument.presentationml')) return '.pptx';
+		if (type.includes('zip')) return '.zip';
+		if (type.includes('image/jpeg')) return '.jpg';
+		if (type.includes('image/png')) return '.png';
+		return '';
+	}
+
+	async function fetchFileAndAdd(fileUrl, suggestedName, zipFolder) {
+		const resp = await fetch(fileUrl);
+		if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+		const contentDisp = resp.headers.get('Content-Disposition');
+		const contentType = resp.headers.get('Content-Type') || '';
+		const blob = await resp.blob();
+
+		let filename = suggestedName;
+
+		if (contentDisp && /filename="?([^"]+)"?/i.test(contentDisp)) {
+			filename = decodeURIComponent(RegExp.$1);
+		} else if (!/\.[a-z0-9]+$/i.test(filename)) {
+			filename += extensionFromContentType(contentType);
+		}
+
+		zipFolder.file(filename, blob);
+		console.log(`Ajouté : ${filename}`);
+	}
+
+	async function exploreFolder(containerUrl, zipFolder) {
+		try {
+			const resp = await fetch(containerUrl);
+			const html = await resp.text();
+			const parser = new DOMParser();
+			const doc = parser.parseFromString(html, 'text/html');
+
+			if (urlFinitParChiffre(containerUrl)) {
+				const fileElems = doc.querySelectorAll('p.doc');
+				for (const p of fileElems) {
+					const a = p.querySelector('a[href]');
+					if (!a) continue;
+					const fileUrl = new URL(a.getAttribute('href'), containerUrl).href;
+					const nameSpan = p.querySelector('span.nom');
+					const baseName = nameSpan ? nameSpan.textContent.trim() : 'document';
+					await fetchFileAndAdd(fileUrl, baseName, zipFolder);
+				}
+			}
+
+			const dirElems = doc.querySelectorAll('p.rep');
+			for (const p of dirElems) {
+				const a = p.querySelector('a[href]');
+				if (!a) continue;
+				const subUrl = new URL(a.getAttribute('href'), containerUrl).href;
+				const nameSpan = p.querySelector('span.nom');
+				const folderName = nameSpan ? nameSpan.textContent.trim() : 'sous_dossier';
+				const subZip = zipFolder.folder(folderName);
+				await exploreFolder(subUrl, subZip);
+			}
+		} catch (err) {
+			console.error(`Erreur exploration : ${containerUrl}`, err);
+		}
+	}
+
+	const headerH1 = document.querySelector('header h1');
+	const baseName = headerH1 ? headerH1.textContent.trim().replace(/[\\/:*?"<>|]/g, '_') : 'documents';
+
+	const zip = new JSZip();
+	const root = zip.folder(baseName); // NOM DU DOSSIER RACINE DANS LE ZIP
+	const zipName = baseName + '.zip'; // NOM DU ZIP FINAL
+
+	if (urlFinitParChiffre(window.location.href)) {
+		const fileElems = document.querySelectorAll('p.doc');
+		for (const p of fileElems) {
+			const a = p.querySelector('a[href]');
+			if (!a) continue;
+			const fileUrl = new URL(a.getAttribute('href'), window.location.href).href;
+			const nameSpan = p.querySelector('span.nom');
+			const baseName = nameSpan ? nameSpan.textContent.trim() : 'document';
+			await fetchFileAndAdd(fileUrl, baseName, root);
+		}
+	}
+
+	const dirElems = document.querySelectorAll('p.rep');
+	for (const p of dirElems) {
+		const a = p.querySelector('a[href]');
+		if (!a) continue;
+		const subUrl = new URL(a.getAttribute('href'), window.location.href).href;
+		const nameSpan = p.querySelector('span.nom');
+		const folderName = nameSpan ? nameSpan.textContent.trim() : 'sous_dossier';
+		const subZip = root.folder(folderName);
+		await exploreFolder(subUrl, subZip);
+	}
+
+	const content = await zip.generateAsync({ type: 'blob' });
+	const url = URL.createObjectURL(content);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = zipName;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
+
+	console.log(`Téléchargement terminé : ${zipName}`);
+})();
